@@ -351,8 +351,35 @@ fn bcb_filtered_successors<'a, 'tcx>(terminator: &'a Terminator<'tcx>) -> Covera
 
         // A call terminator can normally be chained, except when they have no
         // successor because they are known to diverge.
-        Call { target: maybe_target, .. } => match maybe_target {
-            Some(target) => CoverageSuccessors::Chainable(target),
+        Call { target: ref maybe_target, func: ref fun_operand, .. } =>
+        match *maybe_target {
+            Some(target) => {
+                if format!("{:?}", fun_operand).contains("kani::assume") {
+                    // Can't return `&[target]` here as in:
+                    //
+                    // ```rs
+                    // CoverageSuccessors::NotChainable(&[target])
+                    // ```
+                    //
+                    // because I'll get the compiler error:
+                    //
+                    // ```rs
+                    // error[E0515]: cannot return value referencing temporary value
+                    //    --> compiler/rustc_mir_transform/src/coverage/graph.rs:358:21
+                    //    |
+                    // 358 |                     CoverageSuccessors::NotChainable(&[target])
+                    //    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^--------^
+                    //    |                     |                                 |
+                    //    |                     |                                 temporary value created here
+                    //    |                     returns a value referencing data owned by the current function
+                    //```
+                    //
+                    // I don't know how to work around this compiler error.
+                    CoverageSuccessors::NotChainable(&[])
+                } else {
+                    CoverageSuccessors::Chainable(target)
+                }
+            }
             None => CoverageSuccessors::NotChainable(&[]),
         },
 
