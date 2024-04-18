@@ -19,6 +19,7 @@ use rustc_middle::mir::{
     TerminatorKind,
 };
 use rustc_middle::ty::TyCtxt;
+use rustc_session::config::CoverageOptions;
 use rustc_span::def_id::LocalDefId;
 use rustc_span::source_map::SourceMap;
 use rustc_span::{BytePos, Pos, RelativeBytePos, Span, Symbol};
@@ -26,7 +27,9 @@ use rustc_span::{BytePos, Pos, RelativeBytePos, Span, Symbol};
 /// Inserts `StatementKind::Coverage` statements that either instrument the binary with injected
 /// counters, via intrinsic `llvm.instrprof.increment`, and/or inject metadata used during codegen
 /// to construct the coverage map.
-pub struct InstrumentCoverage;
+pub struct InstrumentCoverage {
+    pub(crate) opts: CoverageOptions,
+}
 
 impl<'tcx> MirPass<'tcx> for InstrumentCoverage {
     fn is_enabled(&self, sess: &rustc_session::Session) -> bool {
@@ -57,16 +60,20 @@ impl<'tcx> MirPass<'tcx> for InstrumentCoverage {
             _ => {}
         }
 
-        instrument_function_for_coverage(tcx, mir_body);
+        instrument_function_for_coverage(tcx, mir_body, self.opts);
     }
 }
 
-fn instrument_function_for_coverage<'tcx>(tcx: TyCtxt<'tcx>, mir_body: &mut mir::Body<'tcx>) {
+fn instrument_function_for_coverage<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    mir_body: &mut mir::Body<'tcx>,
+    opts: CoverageOptions,
+) {
     let def_id = mir_body.source.def_id();
     let _span = debug_span!("instrument_function_for_coverage", ?def_id).entered();
 
     let hir_info = extract_hir_info(tcx, def_id.expect_local());
-    let basic_coverage_blocks = CoverageGraph::from_mir(mir_body);
+    let basic_coverage_blocks = CoverageGraph::from_mir(mir_body, opts);
 
     ////////////////////////////////////////////////////
     // Compute coverage spans from the `CoverageGraph`.

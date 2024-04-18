@@ -952,6 +952,7 @@ mod parse {
             };
             let slot = match option {
                 "branch" => &mut slot.branch,
+                "panics-opt" => &mut slot.panics_opt,
                 _ => return false,
             };
             *slot = enabled;

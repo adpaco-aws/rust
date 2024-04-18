@@ -148,6 +148,7 @@ pub enum InstrumentCoverage {
 pub struct CoverageOptions {
     /// Add branch coverage instrumentation.
     pub branch: bool,
+    pub panics_opt: bool,
 }
 
 /// Settings for `-Z instrument-xray` flag.
