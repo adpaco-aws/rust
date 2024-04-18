@@ -5,6 +5,7 @@ use rustc_data_structures::graph::{self, GraphSuccessors, WithNumNodes, WithStar
 use rustc_index::bit_set::BitSet;
 use rustc_index::IndexVec;
 use rustc_middle::mir::{self, BasicBlock, Terminator, TerminatorKind};
+use rustc_session::config::CoverageOptions;
 
 use std::cmp::Ordering;
 use std::collections::VecDeque;
@@ -22,20 +23,20 @@ pub(super) struct CoverageGraph {
 }
 
 impl CoverageGraph {
-    pub fn from_mir(mir_body: &mir::Body<'_>) -> Self {
-        let (bcbs, bb_to_bcb) = Self::compute_basic_coverage_blocks(mir_body);
+    pub fn from_mir(mir_body: &mir::Body<'_>, opts: CoverageOptions) -> Self {
+        let (bcbs, bb_to_bcb) = Self::compute_basic_coverage_blocks(mir_body, opts);
 
         // Pre-transform MIR `BasicBlock` successors and predecessors into the BasicCoverageBlock
         // equivalents. Note that since the BasicCoverageBlock graph has been fully simplified, the
         // each predecessor of a BCB leader_bb should be in a unique BCB. It is possible for a
         // `SwitchInt` to have multiple targets to the same destination `BasicBlock`, so
         // de-duplication is required. This is done without reordering the successors.
-
+        let dont_chain_calls = !opts.panics_opt;
         let successors = IndexVec::from_fn_n(
             |bcb| {
                 let mut seen_bcbs = FxHashSet::default();
                 let terminator = mir_body[bcbs[bcb].last_bb()].terminator();
-                bcb_filtered_successors(terminator)
+                bcb_filtered_successors(terminator, dont_chain_calls)
                     .into_iter()
                     .filter_map(|successor_bb| bb_to_bcb[successor_bb])
                     // Remove duplicate successor BCBs, keeping only the first.
@@ -68,6 +69,7 @@ impl CoverageGraph {
 
     fn compute_basic_coverage_blocks(
         mir_body: &mir::Body<'_>,
+        opts: CoverageOptions,
     ) -> (
         IndexVec<BasicCoverageBlock, BasicCoverageBlockData>,
         IndexVec<BasicBlock, Option<BasicCoverageBlock>>,
@@ -100,7 +102,9 @@ impl CoverageGraph {
         // Accumulates a chain of blocks that will be combined into one BCB.
         let mut basic_blocks = Vec::new();
 
-        let filtered_successors = |bb| bcb_filtered_successors(mir_body[bb].terminator());
+        let no_chain_calls = !opts.panics_opt;
+        let filtered_successors =
+            |bb| bcb_filtered_successors(mir_body[bb].terminator(), no_chain_calls);
         for bb in short_circuit_preorder(mir_body, filtered_successors)
             .filter(|&bb| mir_body[bb].terminator().kind != TerminatorKind::Unreachable)
         {
@@ -330,7 +334,10 @@ impl IntoIterator for CoverageSuccessors<'_> {
 // graph, i.e. those that do not represent unwinds or false edges.
 // FIXME(#78544): MIR InstrumentCoverage: Improve coverage of `#[should_panic]` tests and
 // `catch_unwind()` handlers.
-fn bcb_filtered_successors<'a, 'tcx>(terminator: &'a Terminator<'tcx>) -> CoverageSuccessors<'a> {
+fn bcb_filtered_successors<'a, 'tcx>(
+    terminator: &'a Terminator<'tcx>,
+    no_chain_calls: bool,
+) -> CoverageSuccessors<'a> {
     use TerminatorKind::*;
     match terminator.kind {
         // A switch terminator can have many coverage-relevant successors.
@@ -351,10 +358,19 @@ fn bcb_filtered_successors<'a, 'tcx>(terminator: &'a Terminator<'tcx>) -> Covera
 
         // A call terminator can normally be chained, except when they have no
         // successor because they are known to diverge.
-        Call { target: maybe_target, .. } => match maybe_target {
-            Some(target) => CoverageSuccessors::Chainable(target),
-            None => CoverageSuccessors::NotChainable(&[]),
-        },
+        Call { target: ref maybe_target, .. } => {
+            if no_chain_calls {
+                match maybe_target {
+                    Some(t) => CoverageSuccessors::NotChainable(std::slice::from_ref(t)),
+                    None => CoverageSuccessors::NotChainable(&[]),
+                }
+            } else {
+                match maybe_target {
+                    Some(t) => CoverageSuccessors::Chainable(*t),
+                    None => CoverageSuccessors::NotChainable(&[]),
+                }
+            }
+        }
 
         // An inline asm terminator can normally be chained, except when it diverges or uses asm
         // goto.

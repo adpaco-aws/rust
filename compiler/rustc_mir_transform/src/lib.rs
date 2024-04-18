@@ -342,10 +342,12 @@ fn mir_promoted(
 
     // What we need to run borrowck etc.
     let promote_pass = promote_consts::PromoteTemps::default();
+    let instrument_coverage_pass =
+        coverage::InstrumentCoverage { opts: tcx.sess.opts.unstable_opts.coverage_options };
     pm::run_passes(
         tcx,
         &mut body,
-        &[&promote_pass, &simplify::SimplifyCfg::PromoteConsts, &coverage::InstrumentCoverage],
+        &[&promote_pass, &simplify::SimplifyCfg::PromoteConsts, &instrument_coverage_pass],
         Some(MirPhase::Analysis(AnalysisPhase::Initial)),
     );
 
